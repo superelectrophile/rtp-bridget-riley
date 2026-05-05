@@ -1,73 +1,47 @@
-# React + TypeScript + Vite
+# rtp-bridget-riley
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A generative grid visualization inspired by Bridget Riley's op-art. A checkerboard of ellipses is distorted by two draggable bars, compressing columns toward each bar position.
 
-Currently, two official plugins are available:
+## Layout algorithm
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The core of the visualization is `computeLayout` in [CheckerboardGrid.tsx](src/CheckerboardGrid.tsx). Its job is to assign a display-space x position to each column given the two bar positions.
 
-## React Compiler
+### The ODE perspective
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Each column's width is `cellSize · f(x)`, where `f(x)` is the distortion factor at display position `x`:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+f(x) = 1 − max(A·exp(−((x−p₁)/b)²), A·exp(−((x−p₂)/b)²))
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+`A` is amplitude, `b` is spread, and `p₁`, `p₂` are the bar positions. `f` is close to 1 far from any bar and dips toward `1−A` at a bar.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+The column positions satisfy the recurrence `x[n+1] = x[n] + cellSize · f(x[n])`, which is the **forward Euler method** for the ODE:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
 ```
+dx/dn = cellSize · f(x),    x(cSplit) = anchorX
+```
+
+where `n` is column index and `anchorX = (p₁+p₂)/2` is the fixed anchor. In the continuous limit this integrates to:
+
+```
+∫_{anchorX}^{x(n)} dt/f(t)  =  cellSize · (n − cSplit)
+```
+
+`f` is the local scale factor of the mapping from column-index space to display space. Columns pile up wherever `f` is small — i.e. at the bar positions — which is why the maximum distortion aligns with the bars in display space, not in some abstract undistorted space.
+
+### Evaluating in display space
+
+Evaluating `f` at the running display position `x[n]` (rather than at a pre-computed undistorted position `n·cellSize`) is what makes this self-referential and correct: the compression is measured where the column actually ends up, so the bars are truly at the visual peaks of distortion.
+
+### Continuity: why cSplit is fixed
+
+The algorithm integrates rightward from `cSplit` and leftward from `cSplit−1`, both starting at `anchorX`. If `cSplit` tracked `floor(anchorX/cellSize)`, a column would switch sides whenever the anchor crossed a column boundary, causing a discontinuous jump (~cellSize in magnitude). Fixing `cSplit = floor(cols/2)` means no column ever switches sides: the only thing that changes as the anchor moves is the initial condition `x(cSplit) = anchorX`, which varies continuously.
+
+## Constants
+
+| Name | Role |
+|---|---|
+| `DISTORTION_AMPLITUDE` | `A` — maximum fraction of column width removed at a bar |
+| `DISTORTION_SPREAD` | `b` — Gaussian half-width of the distortion in pixels |
+| `BAR_WIDTH` | Visual width of the draggable bar rect in pixels |
