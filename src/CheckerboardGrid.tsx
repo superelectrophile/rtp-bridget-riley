@@ -5,18 +5,52 @@ function hsl(h: number, s: number, l: number): string {
   return `hsl(${h},${s}%,${l}%)`;
 }
 
+function smoothstep01(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+}
+
+/** Ellipse base color in viewport center; toward left/right edges, → white (s→0, l→100). */
+const ELLIPSE_H = 200;
+const ELLIPSE_S = 80;
+const ELLIPSE_L = 0;
+/**
+ * Normalized width (in edge-distance `raw` ∈ [0,1]) of black→white blend when
+ * EDGE_GRADIENT_SHARPNESS === 1. Not a separate UI knob; tune sharpness instead.
+ */
+const EDGE_GRADIENT_TRANSITION_BASE = 0.36;
+/**
+ * Higher = narrower fringe at the viewport edges; ellipses stay saturated (black)
+ * farther into the edge zone before fading to white.
+ */
+const EDGE_GRADIENT_SHARPNESS = 1.0;
+
+function ellipseFillAt(cx: number, viewportWidth: number): string {
+  if (viewportWidth <= 0) return hsl(ELLIPSE_H, 0, 100);
+  const half = viewportWidth * 0.5;
+  const raw = Math.max(0, Math.min(1, Math.min(cx, viewportWidth - cx) / half));
+  const band = EDGE_GRADIENT_TRANSITION_BASE / EDGE_GRADIENT_SHARPNESS;
+  const t = smoothstep01(Math.min(1, raw / band));
+  const s = ELLIPSE_S * t;
+  const l = ELLIPSE_L + (100 - ELLIPSE_L) * (1 - t);
+  return hsl(ELLIPSE_H, s, l);
+}
+
 const BAR_WIDTH = 3;
 const INDICATOR_HEIGHT = 36;
 const DISTORTION_AMPLITUDE = 0.85; // a: max fraction of rx removed at bar center
 const DISTORTION_SPREAD = 80; // b: gaussian falloff width in pixels
 const OFF_FRAC = 4; // bars animate to ±OFF_FRAC × svgWidth when toggled off
+/** Extra columns in the layout (split left / right) so compressed distortion still spans the viewport. */
+const PADDING_COLS = 60;
 
 function distortionFactor(ux: number, bar1X: number, bar2X: number): number {
-  const g1 = DISTORTION_AMPLITUDE * Math.exp(-(((ux - bar1X) / DISTORTION_SPREAD) ** 2));
-  const g2 = DISTORTION_AMPLITUDE * Math.exp(-(((ux - bar2X) / DISTORTION_SPREAD) ** 2));
+  const g1 =
+    DISTORTION_AMPLITUDE * Math.exp(-(((ux - bar1X) / DISTORTION_SPREAD) ** 2));
+  const g2 =
+    DISTORTION_AMPLITUDE * Math.exp(-(((ux - bar2X) / DISTORTION_SPREAD) ** 2));
   return 1 - Math.max(g1, g2);
 }
-
 
 // Returns distorted center x and width for each column, anchored at the mean of both bars.
 // cSplit is fixed at cols/2 so no column ever switches groups as the anchor moves,
@@ -26,7 +60,7 @@ function computeLayout(
   cols: number,
   cellSize: number,
   bar1X: number,
-  bar2X: number
+  bar2X: number,
 ): { centers: number[]; widths: number[] } {
   const anchorX = (bar1X + bar2X) / 2;
   const cSplit = Math.floor(cols / 2);
@@ -58,7 +92,10 @@ interface Props {
   distortionOn?: boolean;
 }
 
-export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }: Props) {
+export default function CheckerboardGrid({
+  cellSize = 24,
+  distortionOn = true,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const indicatorRef = useRef<SVGSVGElement>(null);
@@ -109,14 +146,19 @@ export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }:
         .attr("cy", INDICATOR_HEIGHT / 2)
         .attr("r", 6)
         .attr("fill", hsl(0, 0, 0))
-        .attr("visibility", (d: number) => (d >= 0 && d <= svgWidth ? "visible" : "hidden"));
+        .attr("visibility", (d: number) =>
+          d >= 0 && d <= svgWidth ? "visible" : "hidden",
+        );
     }
 
     function draw() {
       if (!container) return;
-      const cols = Math.floor(container.clientWidth / cellSize);
-      const rows = Math.floor((container.clientHeight - INDICATOR_HEIGHT) / cellSize);
-      const svgWidth = cols * cellSize;
+      const viewportCols = Math.floor(container.clientWidth / cellSize);
+      const layoutCols = viewportCols + PADDING_COLS;
+      const rows = Math.floor(
+        (container.clientHeight - INDICATOR_HEIGHT) / cellSize,
+      );
+      const svgWidth = viewportCols * cellSize;
       const svgHeight = rows * cellSize;
       const radius = cellSize / 2;
 
@@ -126,14 +168,19 @@ export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }:
       svg.selectAll("ellipse").remove();
       const cells: [number, number][] = [];
       for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
+        for (let c = 0; c < layoutCols; c++) {
           if ((c + r) % 2 === 0) cells.push([c, r]);
         }
       }
 
       const bar1X = bar1EffFracRef.current * svgWidth;
       const bar2X = bar2EffFracRef.current * svgWidth;
-      const { centers, widths } = computeLayout(cols, cellSize, bar1X, bar2X);
+      const { centers, widths } = computeLayout(
+        layoutCols,
+        cellSize,
+        bar1X,
+        bar2X,
+      );
 
       svg
         .selectAll("ellipse")
@@ -143,15 +190,22 @@ export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }:
         .attr("cy", ([, r]) => r * cellSize + cellSize / 2)
         .attr("rx", ([c]) => widths[c] / 2)
         .attr("ry", radius)
-        .attr("fill", hsl(0, 0, 0))
+        .attr("fill", ([c]) => ellipseFillAt(centers[c], svgWidth))
         .attr("stroke", "none");
 
       function updateEllipses(p1: number, p2: number) {
-        const { centers: newCenters, widths: newWidths } = computeLayout(cols, cellSize, p1, p2);
+        const { centers: newCenters, widths: newWidths } = computeLayout(
+          layoutCols,
+          cellSize,
+          p1,
+          p2,
+        );
+        const wv = svgWidthRef.current;
         svg
           .selectAll<SVGEllipseElement, [number, number]>("ellipse")
           .attr("cx", ([c]) => newCenters[c])
-          .attr("rx", ([c]) => newWidths[c] / 2);
+          .attr("rx", ([c]) => newWidths[c] / 2)
+          .attr("fill", ([c]) => ellipseFillAt(newCenters[c], wv));
       }
 
       // Bar 1
@@ -174,14 +228,19 @@ export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }:
         .style("cursor", "ew-resize");
 
       bar1.call(
-        d3.drag<SVGRectElement, unknown>().on("drag", (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
-          const newX = Math.max(0, Math.min(svgWidth, event.x));
-          bar1FractionRef.current = newX / svgWidth;
-          bar1EffFracRef.current = newX / svgWidth;
-          bar1.attr("x", newX - BAR_WIDTH / 2);
-          updateEllipses(newX, bar2EffFracRef.current * svgWidth);
-          updateIndicator(svgWidth);
-        })
+        d3
+          .drag<SVGRectElement, unknown>()
+          .on(
+            "drag",
+            (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
+              const newX = Math.max(0, Math.min(svgWidth, event.x));
+              bar1FractionRef.current = newX / svgWidth;
+              bar1EffFracRef.current = newX / svgWidth;
+              bar1.attr("x", newX - BAR_WIDTH / 2);
+              updateEllipses(newX, bar2EffFracRef.current * svgWidth);
+              updateIndicator(svgWidth);
+            },
+          ),
       );
 
       // Bar 2
@@ -204,14 +263,19 @@ export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }:
         .style("cursor", "ew-resize");
 
       bar2.call(
-        d3.drag<SVGRectElement, unknown>().on("drag", (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
-          const newX = Math.max(0, Math.min(svgWidth, event.x));
-          bar2FractionRef.current = newX / svgWidth;
-          bar2EffFracRef.current = newX / svgWidth;
-          bar2.attr("x", newX - BAR_WIDTH / 2);
-          updateEllipses(bar1EffFracRef.current * svgWidth, newX);
-          updateIndicator(svgWidth);
-        })
+        d3
+          .drag<SVGRectElement, unknown>()
+          .on(
+            "drag",
+            (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
+              const newX = Math.max(0, Math.min(svgWidth, event.x));
+              bar2FractionRef.current = newX / svgWidth;
+              bar2EffFracRef.current = newX / svgWidth;
+              bar2.attr("x", newX - BAR_WIDTH / 2);
+              updateEllipses(bar1EffFracRef.current * svgWidth, newX);
+              updateIndicator(svgWidth);
+            },
+          ),
       );
 
       renderRef.current = () => {
@@ -255,7 +319,10 @@ export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }:
     if (svgEl) {
       const pe = distortionOn ? "auto" : "none";
       d3.select(svgEl)
-        .selectAll<SVGRectElement, unknown>(".bar-group-1 rect, .bar-group-2 rect")
+        .selectAll<
+          SVGRectElement,
+          unknown
+        >(".bar-group-1 rect, .bar-group-2 rect")
         .style("pointer-events", pe);
     }
 
