@@ -1,6 +1,8 @@
 # Recreating the Past: Bridget Riley
 
-Inspired by Bridget Riley’s op art work *Pause* (1964). Reference: [Bridget Riley, *Pause*, 1964](https://gazelliarthouse.com/artists/bridget-riley/works/bridget-riley-pause-1964/) (Gazelli Art House).
+Github Pages: [https://superelectrophile.github.io/rtp-bridget-riley/](https://superelectrophile.github.io/rtp-bridget-riley/)
+
+Inspired by Bridget Riley’s op art work _Pause_ (1964). Reference: [Bridget Riley, _Pause_, 1964](https://gazelliarthouse.com/artists/bridget-riley/works/bridget-riley-pause-1964/) (Gazelli Art House).
 
 This repository (**rtp-bridget-riley**) is an interactive web piece: a checkerboard of ellipses whose column spacing is distorted by two “bars,” combined with live camera input. In **Face** mode, MediaPipe infers your face in the browser and uses those landmarks to place the bars and to modulate a soft highlight over the grid. **Debug** mode keeps the same distortion math but drives the bars manually.
 
@@ -74,10 +76,10 @@ The algorithm integrates rightward from `cSplit` and leftward from `cSplit−1`,
 
 ## Constants
 
-| Name | Role |
-|---|---|
+| Name                   | Role                                                    |
+| ---------------------- | ------------------------------------------------------- |
 | `DISTORTION_AMPLITUDE` | `A` — maximum fraction of column width removed at a bar |
-| `DISTORTION_SPREAD` | `b` — Gaussian half-width of the distortion in pixels |
-| `BAR_WIDTH` | Visual width of the draggable bar rect in pixels |
+| `DISTORTION_SPREAD`    | `b` — Gaussian half-width of the distortion in pixels   |
+| `BAR_WIDTH`            | Visual width of the draggable bar rect in pixels        |
 
 Face glow tuning (see `CheckerboardGrid.tsx` / `faceGlowHull.ts`): `FACE_GLOW_A`, `FACE_GLOW_B`, `FACE_GLOW_SUM_NORMALIZER`, and per-feature weights for oval, eyes, lips, and the nose proxy.
