@@ -10,12 +10,19 @@ import "./App.css";
 /** Viewport px from the right edge that reveal the config panel. */
 const CONFIG_REVEAL_EDGE_PX = 56;
 
+/** Panel auto-opens on load, then tuck away unless the pointer nears the right edge. */
+const CONFIG_INTRO_VISIBLE_MS = 4000;
+
+const PAUSE_1964_URL =
+  "https://gazelliarthouse.com/artists/bridget-riley/works/bridget-riley-pause-1964/";
+
 function App() {
   const [distortionOn, setDistortionOn] = useState(true);
   const [interactionMode, setInteractionMode] =
     useState<InteractionMode>("face");
   const [faceMeshVisible, setFaceMeshVisible] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [nearReveal, setNearReveal] = useState(false);
+  const [introPanelOpen, setIntroPanelOpen] = useState(true);
   const faceBoundsRef = useRef<{ minFr: number; maxFr: number } | null>(null);
   const faceGlowSamplesRef = useRef<GlowSample[] | null>(null);
   const gridWrapRef = useRef<HTMLDivElement>(null);
@@ -40,6 +47,15 @@ function App() {
   }, [interactionMode]);
 
   useEffect(() => {
+    const id = window.setTimeout(() => {
+      setIntroPanelOpen(false);
+    }, CONFIG_INTRO_VISIBLE_MS);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  const configOpen = introPanelOpen || nearReveal;
+
+  useEffect(() => {
     const onMove = (e: MouseEvent) => {
       const w = window.innerWidth;
       const inRevealZone = e.clientX >= w - CONFIG_REVEAL_EDGE_PX;
@@ -53,7 +69,7 @@ function App() {
           e.clientY >= r.top &&
           e.clientY <= r.bottom;
       }
-      setConfigOpen(inRevealZone || overPanel);
+      setNearReveal(inRevealZone || overPanel);
     };
 
     window.addEventListener("mousemove", onMove, { passive: true });
@@ -120,6 +136,39 @@ function App() {
         }}
         aria-hidden={!configOpen}
       >
+        <header style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <h1
+            style={{
+              fontSize: "1.05rem",
+              fontWeight: 650,
+              lineHeight: 1.35,
+              color: "var(--text-h)",
+              margin: 0,
+              fontFamily: "var(--heading)",
+            }}
+          >
+            Recreating the Past: Bridget Riley
+          </h1>
+          <p
+            style={{
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "var(--text)",
+              margin: 0,
+            }}
+          >
+            Inspired by Bridget Riley&apos;s op art work:{" "}
+            <em>Pause</em> (1964){" "}
+            <a
+              className="config-panel-cite"
+              href={PAUSE_1964_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {PAUSE_1964_URL}
+            </a>
+          </p>
+        </header>
         <div
           style={{
             display: "flex",

@@ -1,3 +1,14 @@
+.config-panel-cite {
+  color: var(--accent);
+  word-break: break-all;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.config-panel-cite:hover {
+  text-decoration-thickness: 2px;
+}
+
 .counter {
   font-size: 16px;
   padding: 5px 10px;
