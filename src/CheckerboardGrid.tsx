@@ -1,4 +1,9 @@
-import { useEffect, useRef } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type MutableRefObject,
+} from "react";
 import * as d3 from "d3";
 
 function hsl(h: number, s: number, l: number): string {
@@ -37,7 +42,7 @@ function ellipseFillAt(cx: number, viewportWidth: number): string {
 }
 
 const BAR_WIDTH = 3;
-const INDICATOR_HEIGHT = 36;
+export const INDICATOR_HEIGHT = 36;
 const DISTORTION_AMPLITUDE = 0.85; // a: max fraction of rx removed at bar center
 const DISTORTION_SPREAD = 80; // b: gaussian falloff width in pixels
 const OFF_FRAC = 4; // bars animate to ±OFF_FRAC × svgWidth when toggled off
@@ -87,14 +92,29 @@ function computeLayout(
   return { centers, widths };
 }
 
+export type InteractionMode = "debug" | "face";
+
 interface Props {
   cellSize?: number;
   distortionOn?: boolean;
+  /** Manual bars + distortion toggle vs face-driven bar positions. */
+  interactionMode?: InteractionMode;
+  /** Latest face horizontal bounds in grid fractions [0,1]; null = no face (face mode only). */
+  faceBoundsRef?: MutableRefObject<{ minFr: number; maxFr: number } | null>;
+}
+
+const FACE_BAR_LERP = 0.22;
+const FACE_BAR_MIN_SEPARATION = 0.04;
+
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x));
 }
 
 export default function CheckerboardGrid({
   cellSize = 24,
   distortionOn = true,
+  interactionMode = "face",
+  faceBoundsRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -110,7 +130,15 @@ export default function CheckerboardGrid({
   // Closed over latest draw() state; called by the animation loop
   const renderRef = useRef<(() => void) | null>(null);
   const distortionOnRef = useRef(distortionOn);
-  distortionOnRef.current = distortionOn;
+  const interactionModeRef = useRef(interactionMode);
+
+  useLayoutEffect(() => {
+    distortionOnRef.current = distortionOn;
+  }, [distortionOn]);
+
+  useLayoutEffect(() => {
+    interactionModeRef.current = interactionMode;
+  }, [interactionMode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -217,7 +245,7 @@ export default function CheckerboardGrid({
         .raise();
 
       const bar1 = barGroup1
-        .selectAll<SVGRectElement, unknown>("rect")
+        .selectAll<SVGRectElement, null>("rect")
         .data([null])
         .join("rect")
         .attr("x", bar1X - BAR_WIDTH / 2)
@@ -227,21 +255,19 @@ export default function CheckerboardGrid({
         .attr("fill", hsl(0, 0, 40))
         .style("cursor", "ew-resize");
 
-      bar1.call(
-        d3
-          .drag<SVGRectElement, unknown>()
-          .on(
-            "drag",
-            (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
-              const newX = Math.max(0, Math.min(svgWidth, event.x));
-              bar1FractionRef.current = newX / svgWidth;
-              bar1EffFracRef.current = newX / svgWidth;
-              bar1.attr("x", newX - BAR_WIDTH / 2);
-              updateEllipses(newX, bar2EffFracRef.current * svgWidth);
-              updateIndicator(svgWidth);
-            },
-          ),
-      );
+      const drag1 = d3
+        .drag<SVGRectElement, null>()
+        .on("drag", (event: d3.D3DragEvent<SVGRectElement, null, null>) => {
+          const newX = Math.max(0, Math.min(svgWidth, event.x));
+          bar1FractionRef.current = newX / svgWidth;
+          bar1EffFracRef.current = newX / svgWidth;
+          bar1.attr("x", newX - BAR_WIDTH / 2);
+          updateEllipses(newX, bar2EffFracRef.current * svgWidth);
+          updateIndicator(svgWidth);
+        });
+      if (interactionMode === "debug") {
+        bar1.call(drag1);
+      }
 
       // Bar 2
       const barGroup2 = svg
@@ -252,7 +278,7 @@ export default function CheckerboardGrid({
         .raise();
 
       const bar2 = barGroup2
-        .selectAll<SVGRectElement, unknown>("rect")
+        .selectAll<SVGRectElement, null>("rect")
         .data([null])
         .join("rect")
         .attr("x", bar2X - BAR_WIDTH / 2)
@@ -262,21 +288,19 @@ export default function CheckerboardGrid({
         .attr("fill", hsl(0, 0, 40))
         .style("cursor", "ew-resize");
 
-      bar2.call(
-        d3
-          .drag<SVGRectElement, unknown>()
-          .on(
-            "drag",
-            (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
-              const newX = Math.max(0, Math.min(svgWidth, event.x));
-              bar2FractionRef.current = newX / svgWidth;
-              bar2EffFracRef.current = newX / svgWidth;
-              bar2.attr("x", newX - BAR_WIDTH / 2);
-              updateEllipses(bar1EffFracRef.current * svgWidth, newX);
-              updateIndicator(svgWidth);
-            },
-          ),
-      );
+      const drag2 = d3
+        .drag<SVGRectElement, null>()
+        .on("drag", (event: d3.D3DragEvent<SVGRectElement, null, null>) => {
+          const newX = Math.max(0, Math.min(svgWidth, event.x));
+          bar2FractionRef.current = newX / svgWidth;
+          bar2EffFracRef.current = newX / svgWidth;
+          bar2.attr("x", newX - BAR_WIDTH / 2);
+          updateEllipses(bar1EffFracRef.current * svgWidth, newX);
+          updateIndicator(svgWidth);
+        });
+      if (interactionMode === "debug") {
+        bar2.call(drag2);
+      }
 
       renderRef.current = () => {
         const w = svgWidthRef.current;
@@ -288,9 +312,12 @@ export default function CheckerboardGrid({
         updateIndicator(w);
       };
 
-      const pointerEvents = distortionOnRef.current ? "auto" : "none";
-      bar1.style("pointer-events", pointerEvents);
-      bar2.style("pointer-events", pointerEvents);
+      const pe =
+        interactionModeRef.current === "debug" && distortionOnRef.current
+          ? "auto"
+          : "none";
+      bar1.style("pointer-events", pe);
+      bar2.style("pointer-events", pe);
 
       updateIndicator(svgWidth);
     }
@@ -300,9 +327,11 @@ export default function CheckerboardGrid({
     const observer = new ResizeObserver(draw);
     if (container) observer.observe(container);
     return () => observer.disconnect();
-  }, [cellSize]);
+  }, [cellSize, interactionMode]);
 
   useEffect(() => {
+    if (interactionMode !== "debug") return;
+
     const duration = 600;
     const startTime = performance.now();
     const startFrac1 = bar1EffFracRef.current;
@@ -326,7 +355,6 @@ export default function CheckerboardGrid({
         .style("pointer-events", pe);
     }
 
-    // Skip animation when start equals target (e.g. initial mount)
     if (startFrac1 === targetFrac1 && startFrac2 === targetFrac2) return;
 
     function smoothstep(t: number): number {
@@ -354,7 +382,68 @@ export default function CheckerboardGrid({
         animFrameRef.current = null;
       }
     };
-  }, [distortionOn]);
+  }, [distortionOn, interactionMode]);
+
+  useEffect(() => {
+    if (interactionMode !== "face" || !faceBoundsRef) return;
+
+    if (animFrameRef.current !== null) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
+    let raf = 0;
+    const svgEl = svgRef.current;
+
+    const tick = () => {
+      const b = faceBoundsRef.current;
+      let target1: number;
+      let target2: number;
+      if (b) {
+        let lo = clamp01(b.minFr);
+        let hi = clamp01(b.maxFr);
+        if (lo > hi) {
+          const t = lo;
+          lo = hi;
+          hi = t;
+        }
+        if (hi - lo < FACE_BAR_MIN_SEPARATION) {
+          const mid = (lo + hi) / 2;
+          lo = clamp01(mid - FACE_BAR_MIN_SEPARATION / 2);
+          hi = clamp01(mid + FACE_BAR_MIN_SEPARATION / 2);
+        }
+        bar1FractionRef.current = lo;
+        bar2FractionRef.current = hi;
+        target1 = lo;
+        target2 = hi;
+      } else {
+        target1 = -OFF_FRAC;
+        target2 = 1 + OFF_FRAC;
+      }
+
+      const k = FACE_BAR_LERP;
+      bar1EffFracRef.current += (target1 - bar1EffFracRef.current) * k;
+      bar2EffFracRef.current += (target2 - bar2EffFracRef.current) * k;
+
+      renderRef.current?.();
+
+      if (svgEl) {
+        d3.select(svgEl)
+          .selectAll<
+            SVGRectElement,
+            unknown
+          >(".bar-group-1 rect, .bar-group-2 rect")
+          .style("pointer-events", "none");
+      }
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+    };
+  }, [interactionMode, faceBoundsRef]);
 
   return (
     <div
