@@ -9,6 +9,7 @@ const BAR_WIDTH = 3;
 const INDICATOR_HEIGHT = 36;
 const DISTORTION_AMPLITUDE = 0.85; // a: max fraction of rx removed at bar center
 const DISTORTION_SPREAD = 80; // b: gaussian falloff width in pixels
+const OFF_FRAC = 4; // bars animate to ±OFF_FRAC × svgWidth when toggled off
 
 function distortionFactor(ux: number, bar1X: number, bar2X: number): number {
   const g1 = DISTORTION_AMPLITUDE * Math.exp(-(((ux - bar1X) / DISTORTION_SPREAD) ** 2));
@@ -54,14 +55,25 @@ function computeLayout(
 
 interface Props {
   cellSize?: number;
+  distortionOn?: boolean;
 }
 
-export default function CheckerboardGrid({ cellSize = 24 }: Props) {
+export default function CheckerboardGrid({ cellSize = 24, distortionOn = true }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const indicatorRef = useRef<SVGSVGElement>(null);
+  // Stored positions (where the bars live when dragged / toggled on)
   const bar1FractionRef = useRef(0.33);
   const bar2FractionRef = useRef(0.67);
+  // Effective positions (animated; what's actually rendered)
+  const bar1EffFracRef = useRef(0.33);
+  const bar2EffFracRef = useRef(0.67);
+  const svgWidthRef = useRef(0);
+  const animFrameRef = useRef<number | null>(null);
+  // Closed over latest draw() state; called by the animation loop
+  const renderRef = useRef<(() => void) | null>(null);
+  const distortionOnRef = useRef(distortionOn);
+  distortionOnRef.current = distortionOn;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -70,8 +82,8 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
 
     function updateIndicator(svgWidth: number) {
       const positions = [
-        bar1FractionRef.current * svgWidth,
-        bar2FractionRef.current * svgWidth,
+        bar1EffFracRef.current * svgWidth,
+        bar2EffFracRef.current * svgWidth,
       ];
 
       indicator.attr("width", svgWidth).attr("height", INDICATOR_HEIGHT);
@@ -96,7 +108,8 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
         .attr("cx", (d: number) => d)
         .attr("cy", INDICATOR_HEIGHT / 2)
         .attr("r", 6)
-        .attr("fill", hsl(0, 0, 0));
+        .attr("fill", hsl(0, 0, 0))
+        .attr("visibility", (d: number) => (d >= 0 && d <= svgWidth ? "visible" : "hidden"));
     }
 
     function draw() {
@@ -107,6 +120,7 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
       const svgHeight = rows * cellSize;
       const radius = cellSize / 2;
 
+      svgWidthRef.current = svgWidth;
       svg.attr("width", svgWidth).attr("height", svgHeight);
 
       svg.selectAll("ellipse").remove();
@@ -117,8 +131,8 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
         }
       }
 
-      const bar1X = bar1FractionRef.current * svgWidth;
-      const bar2X = bar2FractionRef.current * svgWidth;
+      const bar1X = bar1EffFracRef.current * svgWidth;
+      const bar2X = bar2EffFracRef.current * svgWidth;
       const { centers, widths } = computeLayout(cols, cellSize, bar1X, bar2X);
 
       svg
@@ -163,8 +177,9 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
         d3.drag<SVGRectElement, unknown>().on("drag", (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
           const newX = Math.max(0, Math.min(svgWidth, event.x));
           bar1FractionRef.current = newX / svgWidth;
+          bar1EffFracRef.current = newX / svgWidth;
           bar1.attr("x", newX - BAR_WIDTH / 2);
-          updateEllipses(newX, bar2FractionRef.current * svgWidth);
+          updateEllipses(newX, bar2EffFracRef.current * svgWidth);
           updateIndicator(svgWidth);
         })
       );
@@ -192,11 +207,26 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
         d3.drag<SVGRectElement, unknown>().on("drag", (event: d3.D3DragEvent<SVGRectElement, unknown, unknown>) => {
           const newX = Math.max(0, Math.min(svgWidth, event.x));
           bar2FractionRef.current = newX / svgWidth;
+          bar2EffFracRef.current = newX / svgWidth;
           bar2.attr("x", newX - BAR_WIDTH / 2);
-          updateEllipses(bar1FractionRef.current * svgWidth, newX);
+          updateEllipses(bar1EffFracRef.current * svgWidth, newX);
           updateIndicator(svgWidth);
         })
       );
+
+      renderRef.current = () => {
+        const w = svgWidthRef.current;
+        const p1 = bar1EffFracRef.current * w;
+        const p2 = bar2EffFracRef.current * w;
+        updateEllipses(p1, p2);
+        bar1.attr("x", p1 - BAR_WIDTH / 2);
+        bar2.attr("x", p2 - BAR_WIDTH / 2);
+        updateIndicator(w);
+      };
+
+      const pointerEvents = distortionOnRef.current ? "auto" : "none";
+      bar1.style("pointer-events", pointerEvents);
+      bar2.style("pointer-events", pointerEvents);
 
       updateIndicator(svgWidth);
     }
@@ -207,6 +237,57 @@ export default function CheckerboardGrid({ cellSize = 24 }: Props) {
     if (container) observer.observe(container);
     return () => observer.disconnect();
   }, [cellSize]);
+
+  useEffect(() => {
+    const duration = 600;
+    const startTime = performance.now();
+    const startFrac1 = bar1EffFracRef.current;
+    const startFrac2 = bar2EffFracRef.current;
+    const targetFrac1 = distortionOn ? bar1FractionRef.current : -OFF_FRAC;
+    const targetFrac2 = distortionOn ? bar2FractionRef.current : 1 + OFF_FRAC;
+
+    if (animFrameRef.current !== null) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
+    const svgEl = svgRef.current;
+    if (svgEl) {
+      const pe = distortionOn ? "auto" : "none";
+      d3.select(svgEl)
+        .selectAll<SVGRectElement, unknown>(".bar-group-1 rect, .bar-group-2 rect")
+        .style("pointer-events", pe);
+    }
+
+    // Skip animation when start equals target (e.g. initial mount)
+    if (startFrac1 === targetFrac1 && startFrac2 === targetFrac2) return;
+
+    function smoothstep(t: number): number {
+      return t * t * (3 - 2 * t);
+    }
+
+    function tick() {
+      const elapsed = performance.now() - startTime;
+      const t = Math.min(elapsed / duration, 1);
+      const s = smoothstep(t);
+      bar1EffFracRef.current = startFrac1 + (targetFrac1 - startFrac1) * s;
+      bar2EffFracRef.current = startFrac2 + (targetFrac2 - startFrac2) * s;
+      renderRef.current?.();
+      if (t < 1) {
+        animFrameRef.current = requestAnimationFrame(tick);
+      } else {
+        animFrameRef.current = null;
+      }
+    }
+
+    animFrameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (animFrameRef.current !== null) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+    };
+  }, [distortionOn]);
 
   return (
     <div
