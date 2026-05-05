@@ -1,10 +1,23 @@
-import { useEffect, useLayoutEffect, useRef, type MutableRefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type MutableRefObject,
+} from "react";
 import {
   FaceLandmarker,
   FilesetResolver,
   type NormalizedLandmark,
 } from "@mediapipe/tasks-vision";
 import type { InteractionMode } from "./CheckerboardGrid";
+import {
+  dedupeGlowSamples,
+  GLOW_WEIGHT_FACE_OVAL,
+  GLOW_WEIGHT_EYES,
+  GLOW_WEIGHT_LIPS,
+  GLOW_WEIGHT_NOSE_PROXY,
+  type GlowSample,
+} from "./faceGlowHull";
 
 const WASM_VERSION = "0.10.35";
 const WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${WASM_VERSION}/wasm`;
@@ -23,6 +36,7 @@ type Props = {
   } | null>;
   /** When false, landmarks still run for face mode but the SVG mesh is hidden. */
   meshVisible?: boolean;
+  faceGlowSamplesRef: MutableRefObject<GlowSample[] | null>;
 };
 
 function faceHorizontalExtents(
@@ -39,6 +53,121 @@ function faceHorizontalExtents(
   }
   if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
   return { minFr: minX / w, maxFr: maxX / w };
+}
+
+/** Landmarks on MediaPipe’s face oval (native outline); used for glow centers. */
+function faceOvalGlowSamples(
+  landmarks: NormalizedLandmark[],
+  cw: number,
+  ch: number,
+  mirror: boolean,
+): GlowSample[] {
+  const idxSet = new Set<number>();
+  for (const { start, end } of FaceLandmarker.FACE_LANDMARKS_FACE_OVAL) {
+    idxSet.add(start);
+    idxSet.add(end);
+  }
+  const out: GlowSample[] = [];
+  for (const i of idxSet) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    out.push({
+      x: (mirror ? 1 - lm.x : lm.x) * cw,
+      y: lm.y * ch,
+      weight: GLOW_WEIGHT_FACE_OVAL,
+    });
+  }
+  return out;
+}
+
+function lmToDisplay(
+  lm: NormalizedLandmark,
+  cw: number,
+  ch: number,
+  mirror: boolean,
+): { x: number; y: number } {
+  return {
+    x: (mirror ? 1 - lm.x : lm.x) * cw,
+    y: lm.y * ch,
+  };
+}
+
+function indicesFromConnections(
+  connections: readonly { start: number; end: number }[],
+): Set<number> {
+  const s = new Set<number>();
+  for (const { start, end } of connections) {
+    s.add(start);
+    s.add(end);
+  }
+  return s;
+}
+
+/**
+ * Eye landmarks (GLOW_WEIGHT_EYES), lip landmarks (GLOW_WEIGHT_LIPS), plus one nose proxy:
+ * midpoint of the eye-group centroid and mouth-group centroid (each group mean
+ * normalized by its point count — equal weight between the two means).
+ */
+function featureGlowSamples(
+  landmarks: NormalizedLandmark[],
+  cw: number,
+  ch: number,
+  mirror: boolean,
+): GlowSample[] {
+  const eyeIdx = new Set<number>();
+  for (const conn of [
+    FaceLandmarker.FACE_LANDMARKS_LEFT_EYE,
+    FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE,
+    // FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS,
+    // FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS,
+  ] as const) {
+    for (const { start, end } of conn) {
+      eyeIdx.add(start);
+      eyeIdx.add(end);
+    }
+  }
+  const mouthIdx = indicesFromConnections(FaceLandmarker.FACE_LANDMARKS_LIPS);
+
+  const samples: GlowSample[] = [];
+  let eyeSumX = 0;
+  let eyeSumY = 0;
+  let eyeN = 0;
+  for (const i of eyeIdx) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const { x, y } = lmToDisplay(lm, cw, ch, mirror);
+    samples.push({ x, y, weight: GLOW_WEIGHT_EYES });
+    eyeSumX += x;
+    eyeSumY += y;
+    eyeN++;
+  }
+
+  let mouthSumX = 0;
+  let mouthSumY = 0;
+  let mouthN = 0;
+  for (const i of mouthIdx) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const { x, y } = lmToDisplay(lm, cw, ch, mirror);
+    samples.push({ x, y, weight: GLOW_WEIGHT_LIPS });
+    mouthSumX += x;
+    mouthSumY += y;
+    mouthN++;
+  }
+
+  if (eyeN > 0 && mouthN > 0) {
+    const eyeCx = eyeSumX / eyeN;
+    const eyeCy = eyeSumY / eyeN;
+    const mouthCx = mouthSumX / mouthN;
+    const mouthCy = mouthSumY / mouthN;
+    samples.push({
+      x: (eyeCx + mouthCx) / 2,
+      y: (eyeCy + mouthCy) / 2,
+      weight: GLOW_WEIGHT_NOSE_PROXY,
+    });
+  }
+
+  return samples;
 }
 
 function buildMeshPathD(
@@ -93,6 +222,7 @@ export default function FaceMeshOverlay({
   interactionMode,
   faceBoundsRef,
   meshVisible = true,
+  faceGlowSamplesRef,
 }: Props) {
   const interactionModeRef = useRef(interactionMode);
   useLayoutEffect(() => {
@@ -143,7 +273,11 @@ export default function FaceMeshOverlay({
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+          video: {
+            facingMode: "user",
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
@@ -182,6 +316,20 @@ export default function FaceMeshOverlay({
             performance.now(),
           );
           const face = result.faceLandmarks[0];
+          if (face) {
+            const combined = dedupeGlowSamples([
+              ...faceOvalGlowSamples(face, cw, ch, true),
+              ...featureGlowSamples(face, cw, ch, true),
+            ]);
+            faceGlowSamplesRef.current = combined.length > 0 ? combined : null;
+            // Convex hull (optional — see ./faceGlowHull):
+            // import { convexHull2D, dedupeGlowSamples, glowSamplesFromPts, landmarksToGlowPoints } from "./faceGlowHull";
+            // const hull = convexHull2D(landmarksToGlowPoints(face, cw, ch, true));
+            // const hullGlow = dedupeGlowSamples(glowSamplesFromPts(hull, 1));
+            // faceGlowSamplesRef.current = hullGlow.length > 0 ? hullGlow : null;
+          } else {
+            faceGlowSamplesRef.current = null;
+          }
           if (interactionModeRef.current === "face") {
             if (face) {
               const ext = faceHorizontalExtents(face, cw, true);
@@ -214,9 +362,10 @@ export default function FaceMeshOverlay({
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
       faceBoundsRef.current = null;
+      faceGlowSamplesRef.current = null;
       pathEl.setAttribute("d", "");
     };
-  }, [width, height, faceBoundsRef]);
+  }, [width, height, faceBoundsRef, faceGlowSamplesRef]);
 
   if (width <= 0 || height <= 0) return null;
 

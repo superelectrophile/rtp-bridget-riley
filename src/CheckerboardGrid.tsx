@@ -5,6 +5,7 @@ import {
   type MutableRefObject,
 } from "react";
 import * as d3 from "d3";
+import type { GlowSample } from "./faceGlowHull";
 
 function hsl(h: number, s: number, l: number): string {
   return `hsl(${h},${s}%,${l}%)`;
@@ -30,14 +31,55 @@ const EDGE_GRADIENT_TRANSITION_BASE = 0.36;
  */
 const EDGE_GRADIENT_SHARPNESS = 1.0;
 
-function ellipseFillAt(cx: number, viewportWidth: number): string {
-  if (viewportWidth <= 0) return hsl(ELLIPSE_H, 0, 100);
+/** Gaussian amplitude (intensity scale). */
+export const FACE_GLOW_A = 6.0;
+/** Gaussian falloff radius in pixels (distance scale B). */
+export const FACE_GLOW_B = 60;
+/**
+ * Maps ∑ f_P over convex-hull vertices of the face landmarks to whitening via
+ * smoothstep(sum / NORMALIZER). Fewer points than full mesh — lower = stronger glow.
+ */
+export const FACE_GLOW_SUM_NORMALIZER = 22;
+
+function edgeColorStrength(cx: number, viewportWidth: number): number {
+  if (viewportWidth <= 0) return 0;
   const half = viewportWidth * 0.5;
   const raw = Math.max(0, Math.min(1, Math.min(cx, viewportWidth - cx) / half));
   const band = EDGE_GRADIENT_TRANSITION_BASE / EDGE_GRADIENT_SHARPNESS;
-  const t = smoothstep01(Math.min(1, raw / band));
-  const s = ELLIPSE_S * t;
-  const l = ELLIPSE_L + (100 - ELLIPSE_L) * (1 - t);
+  return smoothstep01(Math.min(1, raw / band));
+}
+
+function glowSumAt(
+  cx: number,
+  cy: number,
+  samples: GlowSample[] | null | undefined,
+): number {
+  if (!samples?.length) return 0;
+  let sum = 0;
+  for (const p of samples) {
+    const d = Math.hypot(cx - p.x, cy - p.y);
+    sum += p.weight * FACE_GLOW_A * Math.exp(-((d / FACE_GLOW_B) ** 2));
+  }
+  return sum;
+}
+
+/** Whitening strength [0,1] from summed Gaussians (higher sum → whiter). */
+function glowWhiteningT(sum: number): number {
+  return smoothstep01(Math.min(1, sum / FACE_GLOW_SUM_NORMALIZER));
+}
+
+function ellipseFillAt(
+  cx: number,
+  cy: number,
+  viewportWidth: number,
+  samples: GlowSample[] | null | undefined,
+): string {
+  if (viewportWidth <= 0) return hsl(ELLIPSE_H, 0, 100);
+  const uEdge = edgeColorStrength(cx, viewportWidth);
+  const g = glowWhiteningT(glowSumAt(cx, cy, samples));
+  const u = Math.max(0, uEdge * (1 - g));
+  const s = ELLIPSE_S * u;
+  const l = ELLIPSE_L + (100 - ELLIPSE_L) * (1 - u);
   return hsl(ELLIPSE_H, s, l);
 }
 
@@ -101,6 +143,8 @@ interface Props {
   interactionMode?: InteractionMode;
   /** Latest face horizontal bounds in grid fractions [0,1]; null = no face (face mode only). */
   faceBoundsRef?: MutableRefObject<{ minFr: number; maxFr: number } | null>;
+  /** 2D points in grid SVG pixels for face glow Gaussians; updated each camera frame. */
+  faceGlowSamplesRef?: MutableRefObject<GlowSample[] | null>;
 }
 
 const FACE_BAR_LERP = 0.22;
@@ -115,6 +159,7 @@ export default function CheckerboardGrid({
   distortionOn = true,
   interactionMode = "face",
   faceBoundsRef,
+  faceGlowSamplesRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -221,7 +266,14 @@ export default function CheckerboardGrid({
         .attr("cy", ([, r]) => r * cellSize + cellSize / 2)
         .attr("rx", ([c]) => widths[c] / 2)
         .attr("ry", radius)
-        .attr("fill", ([c]) => ellipseFillAt(centers[c], svgWidth))
+        .attr("fill", ([c, r]) =>
+          ellipseFillAt(
+            centers[c],
+            r * cellSize + cellSize / 2,
+            svgWidth,
+            faceGlowSamplesRef?.current ?? null,
+          ),
+        )
         .attr("stroke", "none");
 
       function updateEllipses(p1: number, p2: number) {
@@ -236,7 +288,14 @@ export default function CheckerboardGrid({
           .selectAll<SVGEllipseElement, [number, number]>("ellipse")
           .attr("cx", ([c]) => newCenters[c])
           .attr("rx", ([c]) => newWidths[c] / 2)
-          .attr("fill", ([c]) => ellipseFillAt(newCenters[c], wv));
+          .attr("fill", ([c, r]) =>
+            ellipseFillAt(
+              newCenters[c],
+              r * cellSize + cellSize / 2,
+              wv,
+              faceGlowSamplesRef?.current ?? null,
+            ),
+          );
       }
 
       // Bar 1
@@ -334,7 +393,7 @@ export default function CheckerboardGrid({
     const observer = new ResizeObserver(draw);
     if (container) observer.observe(container);
     return () => observer.disconnect();
-  }, [cellSize, interactionMode]);
+  }, [cellSize, interactionMode, faceGlowSamplesRef]);
 
   useEffect(() => {
     if (interactionMode !== "debug") return;
@@ -392,65 +451,57 @@ export default function CheckerboardGrid({
   }, [distortionOn, interactionMode]);
 
   useEffect(() => {
-    if (interactionMode !== "face" || !faceBoundsRef) return;
-
-    if (animFrameRef.current !== null) {
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = null;
-    }
-
     let raf = 0;
-    const svgEl = svgRef.current;
 
     const tick = () => {
-      const b = faceBoundsRef.current;
-      let target1: number;
-      let target2: number;
-      if (b) {
-        let lo = clamp01(b.minFr);
-        let hi = clamp01(b.maxFr);
-        if (lo > hi) {
-          const t = lo;
-          lo = hi;
-          hi = t;
+      if (interactionModeRef.current === "face" && faceBoundsRef) {
+        const b = faceBoundsRef.current;
+        let target1: number;
+        let target2: number;
+        if (b) {
+          let lo = clamp01(b.minFr);
+          let hi = clamp01(b.maxFr);
+          if (lo > hi) {
+            const t = lo;
+            lo = hi;
+            hi = t;
+          }
+          if (hi - lo < FACE_BAR_MIN_SEPARATION) {
+            const mid = (lo + hi) / 2;
+            lo = clamp01(mid - FACE_BAR_MIN_SEPARATION / 2);
+            hi = clamp01(mid + FACE_BAR_MIN_SEPARATION / 2);
+          }
+          bar1FractionRef.current = lo;
+          bar2FractionRef.current = hi;
+          target1 = lo;
+          target2 = hi;
+        } else {
+          target1 = -OFF_FRAC;
+          target2 = 1 + OFF_FRAC;
         }
-        if (hi - lo < FACE_BAR_MIN_SEPARATION) {
-          const mid = (lo + hi) / 2;
-          lo = clamp01(mid - FACE_BAR_MIN_SEPARATION / 2);
-          hi = clamp01(mid + FACE_BAR_MIN_SEPARATION / 2);
-        }
-        bar1FractionRef.current = lo;
-        bar2FractionRef.current = hi;
-        target1 = lo;
-        target2 = hi;
-      } else {
-        target1 = -OFF_FRAC;
-        target2 = 1 + OFF_FRAC;
-      }
 
-      const k = FACE_BAR_LERP;
-      bar1EffFracRef.current += (target1 - bar1EffFracRef.current) * k;
-      bar2EffFracRef.current += (target2 - bar2EffFracRef.current) * k;
+        const k = FACE_BAR_LERP;
+        bar1EffFracRef.current += (target1 - bar1EffFracRef.current) * k;
+        bar2EffFracRef.current += (target2 - bar2EffFracRef.current) * k;
+
+        const svgEl = svgRef.current;
+        if (svgEl) {
+          d3.select(svgEl)
+            .selectAll<
+              SVGRectElement,
+              unknown
+            >(".bar-group-1 rect, .bar-group-2 rect")
+            .style("pointer-events", "none");
+        }
+      }
 
       renderRef.current?.();
-
-      if (svgEl) {
-        d3.select(svgEl)
-          .selectAll<
-            SVGRectElement,
-            unknown
-          >(".bar-group-1 rect, .bar-group-2 rect")
-          .style("pointer-events", "none");
-      }
-
       raf = requestAnimationFrame(tick);
     };
 
     raf = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(raf);
-    };
-  }, [interactionMode, faceBoundsRef]);
+    return () => cancelAnimationFrame(raf);
+  }, [faceBoundsRef]);
 
   return (
     <div

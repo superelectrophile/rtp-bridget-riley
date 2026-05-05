@@ -4,6 +4,7 @@ import CheckerboardGrid, {
   type InteractionMode,
 } from "./CheckerboardGrid";
 import FaceMeshOverlay from "./FaceMeshOverlay";
+import type { GlowSample } from "./faceGlowHull";
 import "./App.css";
 
 /** Viewport px from the right edge that reveal the config panel. */
@@ -16,6 +17,7 @@ function App() {
   const [faceMeshVisible, setFaceMeshVisible] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const faceBoundsRef = useRef<{ minFr: number; maxFr: number } | null>(null);
+  const faceGlowSamplesRef = useRef<GlowSample[] | null>(null);
   const gridWrapRef = useRef<HTMLDivElement>(null);
   const configPanelRef = useRef<HTMLElement>(null);
   const [gridSize, setGridSize] = useState({ w: 0, h: 0 });
@@ -82,6 +84,7 @@ function App() {
           distortionOn={distortionOn}
           interactionMode={interactionMode}
           faceBoundsRef={faceBoundsRef}
+          faceGlowSamplesRef={faceGlowSamplesRef}
         />
         <FaceMeshOverlay
           width={gridSize.w}
@@ -89,6 +92,7 @@ function App() {
           interactionMode={interactionMode}
           faceBoundsRef={faceBoundsRef}
           meshVisible={faceMeshVisible}
+          faceGlowSamplesRef={faceGlowSamplesRef}
         />
       </div>
       <aside
