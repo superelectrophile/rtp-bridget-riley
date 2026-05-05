@@ -146,6 +146,7 @@ export default function CheckerboardGrid({
     const indicator = d3.select(indicatorRef.current);
 
     function updateIndicator(svgWidth: number) {
+      if (interactionMode !== "debug") return;
       const positions = [
         bar1EffFracRef.current * svgWidth,
         bar2EffFracRef.current * svgWidth,
@@ -183,8 +184,10 @@ export default function CheckerboardGrid({
       if (!container) return;
       const viewportCols = Math.floor(container.clientWidth / cellSize);
       const layoutCols = viewportCols + PADDING_COLS;
+      const indicatorReserved =
+        interactionMode === "debug" ? INDICATOR_HEIGHT : 0;
       const rows = Math.floor(
-        (container.clientHeight - INDICATOR_HEIGHT) / cellSize,
+        (container.clientHeight - indicatorReserved) / cellSize,
       );
       const svgWidth = viewportCols * cellSize;
       const svgHeight = rows * cellSize;
@@ -237,11 +240,14 @@ export default function CheckerboardGrid({
       }
 
       // Bar 1
+      const barVis = interactionMode === "debug" ? "visible" : "hidden";
+
       const barGroup1 = svg
         .selectAll<SVGGElement, unknown>(".bar-group-1")
         .data([null])
         .join("g")
         .attr("class", "bar-group-1")
+        .attr("visibility", barVis)
         .raise();
 
       const bar1 = barGroup1
@@ -252,7 +258,7 @@ export default function CheckerboardGrid({
         .attr("y", 0)
         .attr("width", BAR_WIDTH)
         .attr("height", svgHeight)
-        .attr("fill", hsl(0, 0, 40))
+        .attr("fill", hsl(0, 100, 40))
         .style("cursor", "ew-resize");
 
       const drag1 = d3
@@ -275,6 +281,7 @@ export default function CheckerboardGrid({
         .data([null])
         .join("g")
         .attr("class", "bar-group-2")
+        .attr("visibility", barVis)
         .raise();
 
       const bar2 = barGroup2
@@ -285,7 +292,7 @@ export default function CheckerboardGrid({
         .attr("y", 0)
         .attr("width", BAR_WIDTH)
         .attr("height", svgHeight)
-        .attr("fill", hsl(0, 0, 40))
+        .attr("fill", hsl(0, 100, 40))
         .style("cursor", "ew-resize");
 
       const drag2 = d3
@@ -457,7 +464,13 @@ export default function CheckerboardGrid({
       }}
     >
       <svg ref={svgRef} style={{ display: "block" }} />
-      <svg ref={indicatorRef} style={{ display: "block", flexShrink: 0 }} />
+      <svg
+        ref={indicatorRef}
+        style={{
+          display: interactionMode === "debug" ? "block" : "none",
+          flexShrink: 0,
+        }}
+      />
     </div>
   );
 }
